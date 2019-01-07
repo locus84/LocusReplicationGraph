@@ -1,16 +1,16 @@
 # LocusReplicationGraph
 
 This is an extension of ReplicationGraph plugin introduced in UE 4.20.
-It contains a few blueprint library function that controls replication graph.
+It contains a few blueprint library functions that controls replication graph.
 
 As Epic provides a good example of ReplicationGraph in **ShooterGame** project, most of concepts are came from there.
 
 ## What it does
 
-It expose basic control of ReplicationGraph to Blueprint.
-It supports actors that only relevant to owner connection.
-It supports actors that only relevant to team connections.
-It provides api that add/remove dependent actors(c++/blueprint)
+It expose basic control of ReplicationGraph to Blueprints.  
+It supports actors that only relevant to owner connection.  
+It supports actors that only relevant to team connections.  
+It provides api that add/remove dependent actors(c++/blueprint).  
 
 ## Limitations
 
