@@ -1,0 +1,30 @@
+{
+  "FileVersion": 1,
+  "Version": 1,
+  "VersionName": "1.0",
+  "FriendlyName": "Locus Replication Graph Plugin",
+  "Description": "One of default implementations of Replication Graph, which can be used with blueprint.",
+  "Category": "Networking",
+  "CreatedBy": "Locus",
+  "CreatedByURL": "",
+  "DocsURL": "",
+  "MarketplaceURL": "",
+  "SupportURL": "",
+  "EnabledByDefault": false,
+  "CanContainContent": false,
+  "IsBetaVersion": true,
+  "Installed": false,
+  "Modules": [
+    {
+      "Name": "LocusReplicationGraph",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ],
+  "Plugins": [
+    { 
+      "Name": "ReplicationGraph", 
+      "Enabled": true
+    } 
+  ]
+}

@@ -1,0 +1,807 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#include "LocusReplicationGraph.h"
+#include "Engine/LevelScriptActor.h"
+#include "Runtime/Engine/Classes/Kismet/KismetSystemLibrary.h"
+
+#if WITH_GAMEPLAY_DEBUGGER
+#include "GameplayDebuggerCategoryReplicator.h"
+#endif
+
+DEFINE_LOG_CATEGORY(LogLocusReplicationGraph);
+
+float CVar_LocusRepGraph_DestructionInfoMaxDist = 30000.f;
+static FAutoConsoleVariableRef CVarLocusRepGraphDestructMaxDist(TEXT("LocusRepGraph.DestructInfo.MaxDist"), CVar_LocusRepGraph_DestructionInfoMaxDist, TEXT("Max distance (not squared) to rep destruct infos at"), ECVF_Default);
+
+int32 CVar_LocusRepGraph_DisplayClientLevelStreaming = 0;
+static FAutoConsoleVariableRef CVarLocusRepGraphDisplayClientLevelStreaming(TEXT("LocusRepGraph.DisplayClientLevelStreaming"), CVar_LocusRepGraph_DisplayClientLevelStreaming, TEXT(""), ECVF_Default);
+
+float CVar_LocusRepGraph_CellSize = 10000.f;
+static FAutoConsoleVariableRef CVarLocusRepGraphCellSize(TEXT("LocusRepGraph.CellSize"), CVar_LocusRepGraph_CellSize, TEXT(""), ECVF_Default);
+
+// Essentially "Min X" for replication. This is just an initial value. The system will reset itself if actors appears outside of this.
+float CVar_LocusRepGraph_SpatialBiasX = -150000.f;
+static FAutoConsoleVariableRef CVarLocusRepGraphSpatialBiasX(TEXT("LocusRepGraph.SpatialBiasX"), CVar_LocusRepGraph_SpatialBiasX, TEXT(""), ECVF_Default);
+
+// Essentially "Min Y" for replication. This is just an initial value. The system will reset itself if actors appears outside of this.
+float CVar_LocusRepGraph_SpatialBiasY = -200000.f;
+static FAutoConsoleVariableRef CVarLocusRepSpatialBiasY(TEXT("LocusRepGraph.SpatialBiasY"), CVar_LocusRepGraph_SpatialBiasY, TEXT(""), ECVF_Default);
+
+// How many buckets to spread dynamic, spatialized actors across. High number = more buckets = smaller effective replication frequency. This happens before individual actors do their own NetUpdateFrequency check.
+int32 CVar_LocusRepGraph_DynamicActorFrequencyBuckets = 3;
+static FAutoConsoleVariableRef CVarLocusRepDynamicActorFrequencyBuckets(TEXT("LocusRepGraph.DynamicActorFrequencyBuckets"), CVar_LocusRepGraph_DynamicActorFrequencyBuckets, TEXT(""), ECVF_Default);
+
+int32 CVar_LocusRepGraph_DisableSpatialRebuilds = 1;
+static FAutoConsoleVariableRef CVarLocusRepDisableSpatialRebuilds(TEXT("LocusRepGraph.DisableSpatialRebuilds"), CVar_LocusRepGraph_DisableSpatialRebuilds, TEXT(""), ECVF_Default);
+
+// ----------------------------------------------------------------------------------------------------------
+
+
+ULocusReplicationGraph::ULocusReplicationGraph()
+{
+	ReplicationConnectionManagerClass = ULocusReplicationConnectionGraph::StaticClass();
+}
+
+void InitClassReplicationInfo(FClassReplicationInfo& Info, UClass* Class, bool bSpatialize, float ServerMaxTickRate)
+{
+	AActor* CDO = Class->GetDefaultObject<AActor>();
+	if (bSpatialize)
+	{
+		Info.CullDistanceSquared = CDO->NetCullDistanceSquared;
+		UE_LOG(LogLocusReplicationGraph, Log, TEXT("Setting cull distance for %s to %f (%f)"), *Class->GetName(), Info.CullDistanceSquared, FMath::Sqrt(Info.CullDistanceSquared));
+	}
+
+	Info.ReplicationPeriodFrame = FMath::Max<uint32>((uint32)FMath::RoundToFloat(ServerMaxTickRate / CDO->NetUpdateFrequency), 1);
+
+	UClass* NativeClass = Class;
+	while (!NativeClass->IsNative() && NativeClass->GetSuperClass() && NativeClass->GetSuperClass() != AActor::StaticClass())
+	{
+		NativeClass = NativeClass->GetSuperClass();
+	}
+
+	UE_LOG(LogLocusReplicationGraph, Log, TEXT("Setting replication period for %s (%s) to %d frames (%.2f)"), *Class->GetName(), *NativeClass->GetName(), Info.ReplicationPeriodFrame, CDO->NetUpdateFrequency);
+}
+
+const UClass* GetParentNativeClass(const UClass* Class)
+{
+	while (Class && !Class->IsNative())
+	{
+		Class = Class->GetSuperClass();
+	}
+
+	return Class;
+}
+
+void ULocusReplicationGraph::InitGlobalActorClassSettings()
+{
+	Super::InitGlobalActorClassSettings();
+
+	// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// Programatically build the rules.
+	// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+	auto AddInfo = [&](UClass* Class, EClassRepNodeMapping Mapping) { ClassRepNodePolicies.Set(Class, Mapping); };
+
+	AddInfo(AReplicationGraphDebugActor::StaticClass(),			EClassRepNodeMapping::NotRouted);				// Not needed. Replicated special case inside RepGraph
+	AddInfo(AInfo::StaticClass(),								EClassRepNodeMapping::RelevantAllConnections);	// Non spatialized, relevant to all
+	AddInfo(ALevelScriptActor::StaticClass(),					EClassRepNodeMapping::NotRouted);				// Not needed
+#if WITH_GAMEPLAY_DEBUGGER
+	AddInfo(AGameplayDebuggerCategoryReplicator::StaticClass(), EClassRepNodeMapping::RelevantOwnerConnection);	// Only owner connection viable
+#endif
+	//expose inherited object to map custom classes 
+	IsSettingCustomMapping = true;
+	OnCustomClassNodeMapping();
+	IsSettingCustomMapping = false;
+
+	//this does contains all replicated class except GetIsReplicated is false actor
+	//if someone need to make replication work, mark it as replicated and control it over replication graph
+	TArray<UClass*> AllReplicatedClasses;
+
+	//Iterate all class
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		UClass* Class = *It;
+		AActor* ActorCDO = Cast<AActor>(Class->GetDefaultObject());
+
+		if (!ActorCDO || !ActorCDO->GetIsReplicated())
+		{
+			continue;
+		}
+
+		// Skip SKEL and REINST classes.
+		if (Class->GetName().StartsWith(TEXT("SKEL_")) || Class->GetName().StartsWith(TEXT("REINST_")))
+		{
+			continue;
+		}
+
+		// --------------------------------------------------------------------
+		// This is a replicated class. Save this off for the second pass below
+		// --------------------------------------------------------------------
+
+		AllReplicatedClasses.Add(Class);
+
+		// Skip if already in the map (added explicitly)
+		if (ClassRepNodePolicies.Contains(Class, false))
+		{
+			continue;
+		}
+
+		auto ShouldSpatialize = [](const AActor* CDO)
+		{
+			return CDO->GetIsReplicated() && (!(CDO->bAlwaysRelevant || CDO->bOnlyRelevantToOwner || CDO->bNetUseOwnerRelevancy));
+		};
+
+		auto GetLegacyDebugStr = [](const AActor* CDO)
+		{
+			return FString::Printf(TEXT("%s [%d/%d/%d]"), *CDO->GetClass()->GetName(), CDO->bAlwaysRelevant, CDO->bOnlyRelevantToOwner, CDO->bNetUseOwnerRelevancy);
+		};
+
+		// Only handle this class if it differs from its super. There is no need to put every child class explicitly in the graph class mapping
+		UClass* SuperClass = Class->GetSuperClass();
+		if (AActor* SuperCDO = Cast<AActor>(SuperClass->GetDefaultObject()))
+		{
+			if (SuperCDO->GetIsReplicated() == ActorCDO->GetIsReplicated()
+				&& SuperCDO->bAlwaysRelevant == ActorCDO->bAlwaysRelevant
+				&&	SuperCDO->bOnlyRelevantToOwner == ActorCDO->bOnlyRelevantToOwner
+				&&	SuperCDO->bNetUseOwnerRelevancy == ActorCDO->bNetUseOwnerRelevancy
+				)
+			{
+				//same settings with superclass, ignore this class
+				continue;
+			}
+		}
+
+		if (ShouldSpatialize(ActorCDO))
+		{
+			AddInfo(Class, EClassRepNodeMapping::Spatialize_Dynamic);
+		}
+		else if (ActorCDO->bAlwaysRelevant && !ActorCDO->bOnlyRelevantToOwner)
+		{
+			AddInfo(Class, EClassRepNodeMapping::RelevantAllConnections);
+		}
+		else if (ActorCDO->bOnlyRelevantToOwner)
+		{
+			AddInfo(Class, EClassRepNodeMapping::RelevantOwnerConnection);
+		}
+
+		//TODO:: currently missing feature, !bAlwaysRelevant && bOnlyRelevantToOwner -> only owner see this but is spatialized
+	}
+
+	// -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	// Setup FClassReplicationInfo. This is essentially the per class replication settings. Some we set explicitly, the rest we are setting via looking at the legacy settings on AActor.
+	// -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+	TArray<UClass*> ExplicitlySetClasses;
+	auto SetClassInfo = [&](UClass* Class, const FClassReplicationInfo& Info) { GlobalActorReplicationInfoMap.SetClassInfo(Class, Info); ExplicitlySetClasses.Add(Class); };
+
+	FClassReplicationInfo PawnClassRepInfo;
+	PawnClassRepInfo.DistancePriorityScale = 1.f;
+	PawnClassRepInfo.StarvationPriorityScale = 1.f;
+	PawnClassRepInfo.ActorChannelFrameTimeout = 4;
+	PawnClassRepInfo.CullDistanceSquared = 15000.f * 15000.f; // Yuck
+	SetClassInfo(APawn::StaticClass(), PawnClassRepInfo);
+
+	UReplicationGraphNode_ActorListFrequencyBuckets::DefaultSettings.ListSize = 12;
+
+	// Set FClassReplicationInfo based on legacy settings from all replicated classes
+	for (UClass* ReplicatedClass : AllReplicatedClasses)
+	{
+		if (ExplicitlySetClasses.FindByPredicate([&](const UClass* SetClass) { return ReplicatedClass->IsChildOf(SetClass); }) != nullptr)
+		{
+			continue;
+		}
+
+		const bool bClassIsSpatialized = IsSpatialized(ClassRepNodePolicies.GetChecked(ReplicatedClass));
+
+		FClassReplicationInfo ClassInfo;
+		InitClassReplicationInfo(ClassInfo, ReplicatedClass, bClassIsSpatialized, NetDriver->NetServerMaxTickRate);
+		GlobalActorReplicationInfoMap.SetClassInfo(ReplicatedClass, ClassInfo);
+	}
+
+
+	// Print out what we came up with
+	UE_LOG(LogLocusReplicationGraph, Log, TEXT(""));
+	UE_LOG(LogLocusReplicationGraph, Log, TEXT("Class Routing Map: "));
+	UEnum* Enum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EClassRepNodeMapping"));
+	for (auto ClassMapIt = ClassRepNodePolicies.CreateIterator(); ClassMapIt; ++ClassMapIt)
+	{
+		const UClass* Class = CastChecked<UClass>(ClassMapIt.Key().ResolveObjectPtr());
+		const EClassRepNodeMapping Mapping = ClassMapIt.Value();
+
+		// Only print if different than native class
+		const UClass* ParentNativeClass = GetParentNativeClass(Class);
+		const EClassRepNodeMapping* ParentMapping = ClassRepNodePolicies.Get(ParentNativeClass);
+		if (ParentMapping && Class != ParentNativeClass && Mapping == *ParentMapping)
+		{
+			continue;
+		}
+
+		UE_LOG(LogLocusReplicationGraph, Log, TEXT("  %s (%s) -> %s"), *Class->GetName(), *GetNameSafe(ParentNativeClass), *Enum->GetNameStringByValue(static_cast<uint32>(Mapping)));
+	}
+
+	UE_LOG(LogLocusReplicationGraph, Log, TEXT(""));
+	UE_LOG(LogLocusReplicationGraph, Log, TEXT("Class Settings Map: "));
+	FClassReplicationInfo LocusValues;
+	for (auto ClassRepInfoIt = GlobalActorReplicationInfoMap.CreateClassMapIterator(); ClassRepInfoIt; ++ClassRepInfoIt)
+	{
+		const UClass* Class = CastChecked<UClass>(ClassRepInfoIt.Key().ResolveObjectPtr());
+		const FClassReplicationInfo& ClassInfo = ClassRepInfoIt.Value();
+		UE_LOG(LogLocusReplicationGraph, Log, TEXT("  %s (%s) -> %s"), *Class->GetName(), *GetNameSafe(GetParentNativeClass(Class)), *ClassInfo.BuildDebugStringDelta());
+	}
+
+
+	// Rep destruct infos based on CVar value
+	DestructInfoMaxDistanceSquared = CVar_LocusRepGraph_DestructionInfoMaxDist * CVar_LocusRepGraph_DestructionInfoMaxDist;
+
+#if WITH_GAMEPLAY_DEBUGGER
+	AGameplayDebuggerCategoryReplicator::NotifyDebuggerOwnerChange.AddUObject(this, &ULocusReplicationGraph::OnGameplayDebuggerOwnerChange);
+#endif
+}
+
+void ULocusReplicationGraph::InitGlobalGraphNodes()
+{
+	// Preallocate some replication lists.
+	PreAllocateRepList(3, 12);
+	PreAllocateRepList(6, 12);
+	PreAllocateRepList(128, 64);
+	PreAllocateRepList(512, 16);
+
+	// -----------------------------------------------
+	//	Spatial Actors
+	// -----------------------------------------------
+
+	GridNode = CreateNewNode<UReplicationGraphNode_GridSpatialization2D>();
+	GridNode->CellSize = CVar_LocusRepGraph_CellSize;
+	GridNode->SpatialBias = FVector2D(CVar_LocusRepGraph_SpatialBiasX, CVar_LocusRepGraph_SpatialBiasY);
+
+	if (CVar_LocusRepGraph_DisableSpatialRebuilds)
+	{
+		GridNode->AddSpatialRebuildBlacklistClass(AActor::StaticClass()); // Disable All spatial rebuilding
+	}
+
+	AddGlobalGraphNode(GridNode);
+
+	// -----------------------------------------------
+	//	Always Relevant (to everyone) Actors
+	// -----------------------------------------------
+	AlwaysRelevantNode = CreateNewNode<UReplicationGraphNode_AlwaysRelevant_WithPending>();
+	AddGlobalGraphNode(AlwaysRelevantNode);
+}
+
+void ULocusReplicationGraph::InitConnectionGraphNodes(UNetReplicationGraphConnection* RepGraphConnection)
+{
+	Super::InitConnectionGraphNodes(RepGraphConnection);
+
+	//UE_LOG(LogLocusReplicationGraph, Warning, TEXT("InitConnection : %s"), *RepGraphConnection->NetConnection->PlayerController->GetName());
+	ULocusReplicationConnectionGraph* LocusConnManager = Cast<ULocusReplicationConnectionGraph>(RepGraphConnection);
+	if (!LocusConnManager)
+	{
+		UE_LOG(LogLocusReplicationGraph, Warning, TEXT("Unrecognized ConnectionDriver class, Expected ULocusReplicationConnectionGraph"));
+	}
+
+	LocusConnManager->AlwaysRelevantForConnectionNode = CreateNewNode<UReplicationGraphNode_AlwaysRelevant_ForConnection>();
+	AddConnectionGraphNode(LocusConnManager->AlwaysRelevantForConnectionNode, RepGraphConnection);
+
+	LocusConnManager->TeamConnectionNode = CreateNewNode<UReplicationGraphNode_AlwaysRelevant_ForTeam>();
+	AddConnectionGraphNode(LocusConnManager->TeamConnectionNode, RepGraphConnection);
+
+	//don't care about team names as it's initial value is always  NAME_None
+}
+
+void ULocusReplicationGraph::OnRemoveConnectionGraphNodes(UNetReplicationGraphConnection* RepGraphConnection)
+{
+	ULocusReplicationConnectionGraph* LocusConnManager = Cast<ULocusReplicationConnectionGraph>(RepGraphConnection);
+	if (LocusConnManager)
+	{
+		if (LocusConnManager->TeamName != NAME_None)
+		{
+			TeamConnectionListMap.RemoveConnectionFromTeam(LocusConnManager->TeamName, LocusConnManager);
+		}
+	}
+}
+
+void ULocusReplicationGraph::RemoveClientConnection(UNetConnection* NetConnection)
+{
+	//we completely override super function
+
+	int32 ConnectionId = 0;
+	bool bFound = false;
+
+	// Remove the RepGraphConnection associated with this NetConnection. Also update ConnectionIds to stay compact.
+	auto UpdateList = [&](TArray<UNetReplicationGraphConnection*> List, bool CallRemove)
+	{
+		for (int32 idx = 0; idx < Connections.Num(); ++idx)
+		{
+			UNetReplicationGraphConnection* ConnectionManager = Connections[idx];
+			repCheck(ConnectionManager);
+
+			if (ConnectionManager->NetConnection == NetConnection)
+			{
+				ensure(!bFound);
+				if (CallRemove)
+				{
+					//Nofity this to handle something - remove from team list
+					OnRemoveConnectionGraphNodes(ConnectionManager);
+				}
+				Connections.RemoveAtSwap(idx, 1, false);
+				bFound = true;
+			}
+			else
+			{
+				ConnectionManager->ConnectionId = ConnectionId++;
+			}
+		}
+	};
+
+	UpdateList(Connections, true);
+	//we don't care about pending connections, as it's not initialized yet
+	UpdateList(PendingConnections, false);
+
+	if (!bFound)
+	{
+		// At least one list should have found the connection
+		UE_LOG(LogLocusReplicationGraph, Warning, TEXT("UReplicationGraph::RemoveClientConnection could not find connection in Connection (%d) or PendingConnections (%d) lists"), *GetNameSafe(NetConnection), Connections.Num(), PendingConnections.Num());
+	}
+}
+
+void ULocusReplicationGraph::RouteAddNetworkActorToNodes(const FNewReplicatedActorInfo& ActorInfo, FGlobalActorReplicationInfo& GlobalInfo)
+{
+	EClassRepNodeMapping Policy = GetMappingPolicy(ActorInfo.Class);
+	switch (Policy)
+	{
+	case EClassRepNodeMapping::NotRouted:
+	{
+		break;
+	}
+
+	case EClassRepNodeMapping::RelevantAllConnections:
+	{
+		AlwaysRelevantNode->NotifyAddNetworkActor(ActorInfo);
+		break;
+	}
+
+	case EClassRepNodeMapping::RelevantOwnerConnection:
+	case EClassRepNodeMapping::RelevantTeamConnection:
+	{
+		RouteAddNetworkActorToConnectionNodes(Policy, ActorInfo, GlobalInfo);
+		break;
+	}
+
+	case EClassRepNodeMapping::Spatialize_Static:
+	{
+		GridNode->AddActor_Static(ActorInfo, GlobalInfo);
+		break;
+	}
+
+	case EClassRepNodeMapping::Spatialize_Dynamic:
+	{
+		GridNode->AddActor_Dynamic(ActorInfo, GlobalInfo);
+		break;
+	}
+
+	case EClassRepNodeMapping::Spatialize_Dormancy:
+	{
+		GridNode->AddActor_Dormancy(ActorInfo, GlobalInfo);
+		break;
+	}
+	};
+}
+
+void ULocusReplicationGraph::RouteRemoveNetworkActorToNodes(const FNewReplicatedActorInfo& ActorInfo)
+{
+	EClassRepNodeMapping Policy = GetMappingPolicy(ActorInfo.Class);
+
+	switch (Policy)
+	{
+	case EClassRepNodeMapping::NotRouted:
+	{
+		break;
+	}
+
+	case EClassRepNodeMapping::RelevantAllConnections:
+	{
+		AlwaysRelevantNode->NotifyRemoveNetworkActor(ActorInfo);
+		break;
+	}
+
+	case EClassRepNodeMapping::RelevantOwnerConnection:
+	case EClassRepNodeMapping::RelevantTeamConnection:
+	{
+		RouteRemoveNetworkActorToConnectionNodes(Policy, ActorInfo);
+		break;
+	}
+
+	case EClassRepNodeMapping::Spatialize_Static:
+	{
+		GridNode->RemoveActor_Static(ActorInfo);
+		break;
+	}
+
+	case EClassRepNodeMapping::Spatialize_Dynamic:
+	{
+		GridNode->RemoveActor_Dynamic(ActorInfo);
+		break;
+	}
+
+	case EClassRepNodeMapping::Spatialize_Dormancy:
+	{
+		GridNode->RemoveActor_Dormancy(ActorInfo);
+		break;
+	}
+	};
+}
+
+void ULocusReplicationGraph::ResetGameWorldState()
+{
+	Super::ResetGameWorldState();
+	PendingConnectionActors.Reset();
+	PendingTeamRequests.Reset();
+	TeamConnectionListMap.Reset();
+}
+
+// Since we listen to global (static) events, we need to watch out for cross world broadcasts (PIE)
+#if WITH_EDITOR
+#define CHECK_WORLDS(X) if(X->GetWorld() != GetWorld()) return;
+#else
+#define CHECK_WORLDS(X)
+#endif
+
+void ULocusReplicationGraph::AddDependentActor(AActor* ReplicatorActor, AActor* DependentActor)
+{
+	if (ReplicatorActor && DependentActor)
+	{
+		CHECK_WORLDS(ReplicatorActor);
+
+		FGlobalActorReplicationInfo& ActorInfo = GlobalActorReplicationInfoMap.Get(ReplicatorActor);
+		ActorInfo.DependentActorList.PrepareForWrite();
+
+		if (!ActorInfo.DependentActorList.Contains(DependentActor))
+		{
+			ActorInfo.DependentActorList.Add(DependentActor);
+		}
+	}
+}
+
+void ULocusReplicationGraph::RemoveDependentActor(AActor* ReplicatorActor, AActor* DependentActor)
+{
+	if (ReplicatorActor && DependentActor)
+	{
+		CHECK_WORLDS(ReplicatorActor);
+
+		FGlobalActorReplicationInfo& ActorInfo = GlobalActorReplicationInfoMap.Get(ReplicatorActor);
+		ActorInfo.DependentActorList.PrepareForWrite();
+		ActorInfo.DependentActorList.Remove(DependentActor);
+	}
+}
+
+void ULocusReplicationGraph::ChangeOwnerOfAnActor(AActor* ActorToChange, AActor* NewOwner)
+{
+	EClassRepNodeMapping Policy = GetMappingPolicy(ActorToChange->GetClass());
+	if (!ActorToChange || Policy == EClassRepNodeMapping::NotRouted || IsSpatialized(Policy))
+	{
+		//Policy doesn't matter for chaning owner
+		return;
+	}
+
+	//remove from previous connection specific nodes.
+	RouteRemoveNetworkActorToConnectionNodes(Policy, FNewReplicatedActorInfo(ActorToChange));
+
+	//change owner safely
+	ActorToChange->SetOwner(NewOwner);
+
+	//re-route to connection specific nodes with new owner
+	FGlobalActorReplicationInfo& GlobalInfo = GlobalActorReplicationInfoMap.Get(ActorToChange);
+	RouteAddNetworkActorToConnectionNodes(Policy, FNewReplicatedActorInfo(ActorToChange), GlobalInfo);
+}
+
+void ULocusReplicationGraph::SetTeamForPlayerController(APlayerController* PlayerController, FName NextTeam)
+{
+	if (PlayerController)
+	{
+		if (ULocusReplicationConnectionGraph* ConnManager = FindLocusConnectionGraph(PlayerController))
+		{
+			FName CurrentTeam = ConnManager->TeamName;
+			if (CurrentTeam != NextTeam)
+			{
+				if (CurrentTeam != NAME_None)
+				{
+					TeamConnectionListMap.RemoveConnectionFromTeam(CurrentTeam, ConnManager);
+				}
+
+				if (NextTeam != NAME_None)
+				{
+					TeamConnectionListMap.AddConnectionToTeam(NextTeam, ConnManager);
+				}
+				ConnManager->TeamName = NextTeam;
+			}
+		}
+		else
+		{
+			PendingTeamRequests.Add(PlayerController->GetFName(), NextTeam);
+		}
+	}
+}
+
+void ULocusReplicationGraph::OnCustomClassNodeMapping_Implementation()
+{
+}
+
+
+void ULocusReplicationGraph::AddCustomClassMapping(UClass* Class, EClassRepNodeMapping ClassRepNodeMapping)
+{
+	if (!IsSettingCustomMapping)
+	{
+		UE_LOG(LogLocusReplicationGraph, Error, TEXT("Can not add Custom mapping %s now, try implement/override OnCustomClassNodeMapping"), *Class->GetName());
+		return;
+	}
+
+	if (!Class)
+	{
+		UE_LOG(LogLocusReplicationGraph, Error, TEXT("Class is null"));
+		return;
+	}
+
+	if (ClassRepNodePolicies.Contains(Class, false)) 
+	{
+		UE_LOG(LogLocusReplicationGraph, Error, TEXT("Can not add Custom mapping %s, Already exist"), *Class->GetName());
+		return;
+	}
+
+	ClassRepNodePolicies.Set(Class, ClassRepNodeMapping);
+}
+
+void ULocusReplicationGraph::RouteAddNetworkActorToConnectionNodes(EClassRepNodeMapping Policy, const FNewReplicatedActorInfo& ActorInfo, FGlobalActorReplicationInfo& GlobalInfo)
+{
+	if (ULocusReplicationConnectionGraph* ConnManager = FindLocusConnectionGraph(ActorInfo.GetActor()))
+	{
+		switch (Policy)
+		{
+		case EClassRepNodeMapping::RelevantOwnerConnection:
+		{
+			ConnManager->AlwaysRelevantForConnectionNode->NotifyAddNetworkActor(ActorInfo);
+			break;
+		}
+		case EClassRepNodeMapping::RelevantTeamConnection:
+		{
+			ConnManager->TeamConnectionNode->NotifyAddNetworkActor(ActorInfo);
+			break;
+		}
+		};
+	}
+	else if(ActorInfo.Actor->GetNetOwner())
+	{
+		//this actor is not yet ready. add to pending array to handle pending route
+		PendingConnectionActors.Add(ActorInfo.GetActor());
+	}
+}
+
+
+void ULocusReplicationGraph::RouteRemoveNetworkActorToConnectionNodes(EClassRepNodeMapping Policy, const FNewReplicatedActorInfo& ActorInfo)
+{
+	if (ULocusReplicationConnectionGraph* ConnManager = FindLocusConnectionGraph(ActorInfo.GetActor()))
+	{
+		switch (Policy)
+		{
+		case EClassRepNodeMapping::RelevantOwnerConnection:
+		{
+			ConnManager->AlwaysRelevantForConnectionNode->NotifyRemoveNetworkActor(ActorInfo);
+			break;
+		}
+		case EClassRepNodeMapping::RelevantTeamConnection:
+		{
+			ConnManager->TeamConnectionNode->NotifyRemoveNetworkActor(ActorInfo);
+			break;
+		}
+		};
+	}
+	else if (ActorInfo.Actor->GetNetOwner())
+	{
+		//this actor is not yet ready. but doesn't matter the pending array contains the actor or not
+		PendingConnectionActors.Remove(ActorInfo.GetActor());
+	}
+}
+
+void ULocusReplicationGraph::HandlePendingActorsForConnection(UNetReplicationGraphConnection& ConnectionManager)
+{
+	//we don't have to care
+	if(PendingTeamRequests.Num() > 0)
+	{
+		if (ConnectionManager.NetConnection->PlayerController)
+		{
+			FName TeamName;
+			if (PendingTeamRequests.RemoveAndCopyValue(ConnectionManager.NetConnection->PlayerController->GetFName(), TeamName))
+			{
+				SetTeamForPlayerController(ConnectionManager.NetConnection->PlayerController, TeamName);
+			}
+		}
+	}
+
+
+	if (PendingConnectionActors.Num() > 0)
+	{
+		PendingConnectionActors.RemoveAll([&](AActor* Actor)
+		{
+			//invalid actor
+			if (!UKismetSystemLibrary::IsValid(Actor))
+			{
+				//remove
+				return true;
+			}
+
+			//for other connection
+			UNetConnection* Connection = Actor->GetNetConnection();
+
+			if (!Connection)
+			{
+				//no connection. remove
+				return true;
+			}
+
+			if (Connection != ConnectionManager.NetConnection)
+			{
+				//this is for other connection. keep it
+				return false;
+			}
+
+			//re-route actor add
+			EClassRepNodeMapping Policy = GetMappingPolicy(Actor->GetClass());
+			FGlobalActorReplicationInfo& GlobalInfo = GlobalActorReplicationInfoMap.Get(Actor);
+			RouteAddNetworkActorToConnectionNodes(Policy, FNewReplicatedActorInfo(Actor), GlobalInfo);
+			return true;
+		});
+	}
+}
+
+
+class ULocusReplicationConnectionGraph* ULocusReplicationGraph::FindLocusConnectionGraph(const AActor* Actor)
+{
+	if (Actor)
+	{
+		if (UNetConnection* NetConnection = Actor->GetNetConnection())
+		{
+			if (ULocusReplicationConnectionGraph* ConnManager = Cast<ULocusReplicationConnectionGraph>(FindOrAddConnectionManager(NetConnection)))
+			{
+				return ConnManager;
+			}
+		}
+	}
+	return nullptr;
+}
+
+#if WITH_GAMEPLAY_DEBUGGER
+void ULocusReplicationGraph::OnGameplayDebuggerOwnerChange(AGameplayDebuggerCategoryReplicator* Debugger, APlayerController* OldOwner)
+{
+	if (ULocusReplicationConnectionGraph* ConnManager = FindLocusConnectionGraph(OldOwner))
+	{
+		FNewReplicatedActorInfo ActorInfo(Debugger);
+		ConnManager->AlwaysRelevantForConnectionNode->NotifyRemoveNetworkActor(ActorInfo);
+	}
+
+	if (ULocusReplicationConnectionGraph* ConnManager = FindLocusConnectionGraph(Debugger->GetReplicationOwner()))
+	{
+		FNewReplicatedActorInfo ActorInfo(Debugger);
+		ConnManager->AlwaysRelevantForConnectionNode->NotifyAddNetworkActor(ActorInfo);
+	}
+}
+#endif
+
+void ULocusReplicationGraph::PrintRepNodePolicies()
+{
+	UEnum* Enum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EClassRepNodeMapping"));
+	if (!Enum)
+	{
+		return;
+	}
+
+	GLog->Logf(TEXT("===================================="));
+	GLog->Logf(TEXT("Shooter Replication Routing Policies"));
+	GLog->Logf(TEXT("===================================="));
+
+	for (auto It = ClassRepNodePolicies.CreateIterator(); It; ++It)
+	{
+		FObjectKey ObjKey = It.Key();
+
+		EClassRepNodeMapping Mapping = It.Value();
+
+		GLog->Logf(TEXT("%-40s --> %s"), *GetNameSafe(ObjKey.ResolveObjectPtr()), *Enum->GetNameStringByValue(static_cast<uint32>(Mapping)));
+	}
+}
+
+EClassRepNodeMapping ULocusReplicationGraph::GetMappingPolicy(const UClass* Class)
+{
+	EClassRepNodeMapping* PolicyPtr = ClassRepNodePolicies.Get(Class);
+	EClassRepNodeMapping Policy = PolicyPtr ? *PolicyPtr : EClassRepNodeMapping::NotRouted;
+	return Policy;
+}
+
+void UReplicationGraphNode_AlwaysRelevant_ForTeam::GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params)
+{
+	ULocusReplicationConnectionGraph* LocusConnManager = Cast<ULocusReplicationConnectionGraph>(&Params.ConnectionManager);
+	if (LocusConnManager && LocusConnManager->TeamName != NAME_None)
+	{
+		ULocusReplicationGraph* ReplicationGraph = Cast<ULocusReplicationGraph>(GetOuter());
+		if (TArray<ULocusReplicationConnectionGraph*>* TeamConnections = ReplicationGraph->TeamConnectionListMap.GetConnectionArrayForTeam(LocusConnManager->TeamName))
+		{
+			for (ULocusReplicationConnectionGraph* TeamMember : *TeamConnections)
+			{
+				//we call parent 
+				TeamMember->TeamConnectionNode->GatherActorListsForConnectionDefault(Params);
+			}
+		}
+	}
+	else
+	{
+		Super::GatherActorListsForConnection(Params);
+	}
+}
+
+
+void UReplicationGraphNode_AlwaysRelevant_WithPending::GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params)
+{
+	//we have to handle pending actors first
+	ULocusReplicationGraph* ReplicationGraph = Cast<ULocusReplicationGraph>(GetOuter());
+	ReplicationGraph->HandlePendingActorsForConnection(Params.ConnectionManager);
+	Super::GatherActorListsForConnection(Params);
+}
+
+
+void UReplicationGraphNode_AlwaysRelevant_ForTeam::GatherActorListsForConnectionDefault(const FConnectionGatherActorListParameters& Params)
+{
+	Super::GatherActorListsForConnection(Params);
+}
+
+TArray<class ULocusReplicationConnectionGraph*>* FTeamConnectionListMap::GetConnectionArrayForTeam(FName TeamName)
+{
+	return Find(TeamName);
+}
+
+void FTeamConnectionListMap::AddConnectionToTeam(FName TeamName, ULocusReplicationConnectionGraph* ConnManager)
+{
+	TArray<class ULocusReplicationConnectionGraph*>& TeamList = FindOrAdd(TeamName);
+	TeamList.Add(ConnManager);
+}
+
+void FTeamConnectionListMap::RemoveConnectionFromTeam(FName TeamName, ULocusReplicationConnectionGraph* ConnManager)
+{
+	if (TArray<class ULocusReplicationConnectionGraph*>* TeamList = Find(TeamName))
+	{
+		TeamList->RemoveSwap(ConnManager);
+		//remove team if there's noone left
+		if (TeamList->Num() == 0)
+		{
+			Remove(TeamName);
+		}
+	}
+}
+
+
+//console commands copied from shooter repgraph
+// ------------------------------------------------------------------------------
+
+FAutoConsoleCommandWithWorldAndArgs ShooterPrintRepNodePoliciesCmd(TEXT("LocusRepGraph.PrintRouting"), TEXT("Prints how actor classes are routed to RepGraph nodes"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+{
+	for (TObjectIterator<ULocusReplicationGraph> It; It; ++It)
+	{
+		It->PrintRepNodePolicies();
+	}
+})
+);
+
+
+FAutoConsoleCommandWithWorldAndArgs ChangeFrequencyBucketsCmd(TEXT("LocusRepGraph.FrequencyBuckets"), TEXT("Resets frequency bucket count."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray< FString >& Args, UWorld* World)
+{
+	int32 Buckets = 1;
+	if (Args.Num() > 0)
+	{
+		LexTryParseString<int32>(Buckets, *Args[0]);
+	}
+
+	UE_LOG(LogLocusReplicationGraph, Display, TEXT("Setting Frequency Buckets to %d"), Buckets);
+	for (TObjectIterator<UReplicationGraphNode_ActorListFrequencyBuckets> It; It; ++It)
+	{
+		UReplicationGraphNode_ActorListFrequencyBuckets* Node = *It;
+		Node->SetNonStreamingCollectionSize(Buckets);
+	}
+}));
