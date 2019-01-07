@@ -308,7 +308,7 @@ void ULocusReplicationGraph::RemoveClientConnection(UNetConnection* NetConnectio
 	bool bFound = false;
 
 	// Remove the RepGraphConnection associated with this NetConnection. Also update ConnectionIds to stay compact.
-	auto UpdateList = [&](TArray<UNetReplicationGraphConnection*> List, bool CallRemove)
+	auto UpdateList = [&](TArray<UNetReplicationGraphConnection*> List)
 	{
 		for (int32 idx = 0; idx < Connections.Num(); ++idx)
 		{
@@ -318,11 +318,8 @@ void ULocusReplicationGraph::RemoveClientConnection(UNetConnection* NetConnectio
 			if (ConnectionManager->NetConnection == NetConnection)
 			{
 				ensure(!bFound);
-				if (CallRemove)
-				{
-					//Nofity this to handle something - remove from team list
-					OnRemoveConnectionGraphNodes(ConnectionManager);
-				}
+				//Nofity this to handle something - remove from team list
+				OnRemoveConnectionGraphNodes(ConnectionManager);
 				Connections.RemoveAtSwap(idx, 1, false);
 				bFound = true;
 			}
@@ -333,9 +330,8 @@ void ULocusReplicationGraph::RemoveClientConnection(UNetConnection* NetConnectio
 		}
 	};
 
-	UpdateList(Connections, true);
-	//we don't care about pending connections, as it's not initialized yet
-	UpdateList(PendingConnections, false);
+	UpdateList(Connections);
+	UpdateList(PendingConnections);
 
 	if (!bFound)
 	{
