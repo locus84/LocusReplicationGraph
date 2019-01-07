@@ -10,36 +10,17 @@
 
 DEFINE_LOG_CATEGORY(LogLocusReplicationGraph);
 
-float CVar_LocusRepGraph_DestructionInfoMaxDist = 30000.f;
-static FAutoConsoleVariableRef CVarLocusRepGraphDestructMaxDist(TEXT("LocusRepGraph.DestructInfo.MaxDist"), CVar_LocusRepGraph_DestructionInfoMaxDist, TEXT("Max distance (not squared) to rep destruct infos at"), ECVF_Default);
-
-int32 CVar_LocusRepGraph_DisplayClientLevelStreaming = 0;
-static FAutoConsoleVariableRef CVarLocusRepGraphDisplayClientLevelStreaming(TEXT("LocusRepGraph.DisplayClientLevelStreaming"), CVar_LocusRepGraph_DisplayClientLevelStreaming, TEXT(""), ECVF_Default);
-
-float CVar_LocusRepGraph_CellSize = 10000.f;
-static FAutoConsoleVariableRef CVarLocusRepGraphCellSize(TEXT("LocusRepGraph.CellSize"), CVar_LocusRepGraph_CellSize, TEXT(""), ECVF_Default);
-
-// Essentially "Min X" for replication. This is just an initial value. The system will reset itself if actors appears outside of this.
-float CVar_LocusRepGraph_SpatialBiasX = -150000.f;
-static FAutoConsoleVariableRef CVarLocusRepGraphSpatialBiasX(TEXT("LocusRepGraph.SpatialBiasX"), CVar_LocusRepGraph_SpatialBiasX, TEXT(""), ECVF_Default);
-
-// Essentially "Min Y" for replication. This is just an initial value. The system will reset itself if actors appears outside of this.
-float CVar_LocusRepGraph_SpatialBiasY = -200000.f;
-static FAutoConsoleVariableRef CVarLocusRepSpatialBiasY(TEXT("LocusRepGraph.SpatialBiasY"), CVar_LocusRepGraph_SpatialBiasY, TEXT(""), ECVF_Default);
-
-// How many buckets to spread dynamic, spatialized actors across. High number = more buckets = smaller effective replication frequency. This happens before individual actors do their own NetUpdateFrequency check.
-int32 CVar_LocusRepGraph_DynamicActorFrequencyBuckets = 3;
-static FAutoConsoleVariableRef CVarLocusRepDynamicActorFrequencyBuckets(TEXT("LocusRepGraph.DynamicActorFrequencyBuckets"), CVar_LocusRepGraph_DynamicActorFrequencyBuckets, TEXT(""), ECVF_Default);
-
-int32 CVar_LocusRepGraph_DisableSpatialRebuilds = 1;
-static FAutoConsoleVariableRef CVarLocusRepDisableSpatialRebuilds(TEXT("LocusRepGraph.DisableSpatialRebuilds"), CVar_LocusRepGraph_DisableSpatialRebuilds, TEXT(""), ECVF_Default);
-
-// ----------------------------------------------------------------------------------------------------------
-
 
 ULocusReplicationGraph::ULocusReplicationGraph()
 {
 	ReplicationConnectionManagerClass = ULocusReplicationConnectionGraph::StaticClass();
+
+	FClassReplicationInfoBP PawnClassRepInfo;
+	PawnClassRepInfo.Class = APawn::StaticClass();
+	PawnClassRepInfo.DistancePriorityScale = 1.f;
+	PawnClassRepInfo.StarvationPriorityScale = 1.f;
+	PawnClassRepInfo.ActorChannelFrameTimeout = 4;
+	PawnClassRepInfo.CullDistanceSquared = 15000.f * 15000.f;
 }
 
 void InitClassReplicationInfo(FClassReplicationInfo& Info, UClass* Class, bool bSpatialize, float ServerMaxTickRate)
@@ -88,10 +69,11 @@ void ULocusReplicationGraph::InitGlobalActorClassSettings()
 #if WITH_GAMEPLAY_DEBUGGER
 	AddInfo(AGameplayDebuggerCategoryReplicator::StaticClass(), EClassRepNodeMapping::RelevantOwnerConnection);	// Only owner connection viable
 #endif
-	//expose inherited object to map custom classes 
-	IsSettingCustomMapping = true;
-	OnCustomClassNodeMapping();
-	IsSettingCustomMapping = false;
+
+	for (FClassReplicationPolicyBP PolicyBP : ReplicationPolicySettings)
+	{
+		AddInfo(PolicyBP.Class, PolicyBP.Policy);
+	}
 
 	//this does contains all replicated class except GetIsReplicated is false actor
 	//if someone need to make replication work, mark it as replicated and control it over replication graph
@@ -174,12 +156,18 @@ void ULocusReplicationGraph::InitGlobalActorClassSettings()
 	TArray<UClass*> ExplicitlySetClasses;
 	auto SetClassInfo = [&](UClass* Class, const FClassReplicationInfo& Info) { GlobalActorReplicationInfoMap.SetClassInfo(Class, Info); ExplicitlySetClasses.Add(Class); };
 
-	FClassReplicationInfo PawnClassRepInfo;
-	PawnClassRepInfo.DistancePriorityScale = 1.f;
-	PawnClassRepInfo.StarvationPriorityScale = 1.f;
-	PawnClassRepInfo.ActorChannelFrameTimeout = 4;
-	PawnClassRepInfo.CullDistanceSquared = 15000.f * 15000.f; // Yuck
-	SetClassInfo(APawn::StaticClass(), PawnClassRepInfo);
+	for (FClassReplicationInfoBP ReplicationInfoBP : ReplicationInfoSettings)
+	{
+		SetClassInfo(ReplicationInfoBP.Class, ReplicationInfoBP.CreateClassReplicationInfo());
+	}
+	//FClassReplicationInfo PawnClassRepInfo;
+	//PawnClassRepInfo.DistancePriorityScale = 1.f;
+	//PawnClassRepInfo.StarvationPriorityScale = 1.f;
+	//PawnClassRepInfo.ActorChannelFrameTimeout = 4;
+	//PawnClassRepInfo.CullDistanceSquared = 15000.f * 15000.f; // Yuck
+	//SetClassInfo(APawn::StaticClass(), PawnClassRepInfo);
+
+
 
 	UReplicationGraphNode_ActorListFrequencyBuckets::DefaultSettings.ListSize = 12;
 
@@ -231,7 +219,7 @@ void ULocusReplicationGraph::InitGlobalActorClassSettings()
 
 
 	// Rep destruct infos based on CVar value
-	DestructInfoMaxDistanceSquared = CVar_LocusRepGraph_DestructionInfoMaxDist * CVar_LocusRepGraph_DestructionInfoMaxDist;
+	DestructInfoMaxDistanceSquared = DestructionInfoMaxDistance * DestructionInfoMaxDistance;
 
 #if WITH_GAMEPLAY_DEBUGGER
 	AGameplayDebuggerCategoryReplicator::NotifyDebuggerOwnerChange.AddUObject(this, &ULocusReplicationGraph::OnGameplayDebuggerOwnerChange);
@@ -251,10 +239,10 @@ void ULocusReplicationGraph::InitGlobalGraphNodes()
 	// -----------------------------------------------
 
 	GridNode = CreateNewNode<UReplicationGraphNode_GridSpatialization2D>();
-	GridNode->CellSize = CVar_LocusRepGraph_CellSize;
-	GridNode->SpatialBias = FVector2D(CVar_LocusRepGraph_SpatialBiasX, CVar_LocusRepGraph_SpatialBiasY);
+	GridNode->CellSize = SpacialCellSize;
+	GridNode->SpatialBias = SpatialBias;
 
-	if (CVar_LocusRepGraph_DisableSpatialRebuilds)
+	if (!EnableSpatialRebuilds)
 	{
 		GridNode->AddSpatialRebuildBlacklistClass(AActor::StaticClass()); // Disable All spatial rebuilding
 	}
@@ -516,34 +504,6 @@ void ULocusReplicationGraph::SetTeamForPlayerController(APlayerController* Playe
 			PendingTeamRequests.Add(PlayerController->GetFName(), NextTeam);
 		}
 	}
-}
-
-void ULocusReplicationGraph::OnCustomClassNodeMapping_Implementation()
-{
-}
-
-
-void ULocusReplicationGraph::AddCustomClassMapping(UClass* Class, EClassRepNodeMapping ClassRepNodeMapping)
-{
-	if (!IsSettingCustomMapping)
-	{
-		UE_LOG(LogLocusReplicationGraph, Error, TEXT("Can not add Custom mapping %s now, try implement/override OnCustomClassNodeMapping"), *Class->GetName());
-		return;
-	}
-
-	if (!Class)
-	{
-		UE_LOG(LogLocusReplicationGraph, Error, TEXT("Class is null"));
-		return;
-	}
-
-	if (ClassRepNodePolicies.Contains(Class, false)) 
-	{
-		UE_LOG(LogLocusReplicationGraph, Error, TEXT("Can not add Custom mapping %s, Already exist"), *Class->GetName());
-		return;
-	}
-
-	ClassRepNodePolicies.Set(Class, ClassRepNodeMapping);
 }
 
 void ULocusReplicationGraph::RouteAddNetworkActorToConnectionNodes(EClassRepNodeMapping Policy, const FNewReplicatedActorInfo& ActorInfo, FGlobalActorReplicationInfo& GlobalInfo)

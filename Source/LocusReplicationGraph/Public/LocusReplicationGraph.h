@@ -28,6 +28,49 @@ enum class EClassRepNodeMapping : uint8
 };
 
 
+USTRUCT(BlueprintType)
+struct LOCUSREPLICATIONGRAPH_API FClassReplicationPolicyBP
+{
+	GENERATED_BODY()
+public:
+	UPROPERTY(BlueprintReadWrite)
+	TSubclassOf<AActor> Class;
+	UPROPERTY(BlueprintReadWrite)
+	EClassRepNodeMapping Policy;
+};
+
+
+USTRUCT(BlueprintType)
+struct LOCUSREPLICATIONGRAPH_API FClassReplicationInfoBP
+{
+	GENERATED_BODY()
+public:
+
+	UPROPERTY(EditAnywhere)
+	TSubclassOf<AActor> Class;
+	UPROPERTY(EditAnywhere)
+	float DistancePriorityScale = 1.f;
+	UPROPERTY(EditAnywhere)
+	float StarvationPriorityScale = 1.f;
+	UPROPERTY(EditAnywhere)
+	float CullDistanceSquared = 0.f;
+	UPROPERTY(EditAnywhere)
+	uint8 ReplicationPeriodFrame = 1;
+	UPROPERTY(EditAnywhere)
+	uint8 ActorChannelFrameTimeout = 4;
+
+	FClassReplicationInfo CreateClassReplicationInfo()
+	{
+		FClassReplicationInfo Info;
+		Info.DistancePriorityScale = DistancePriorityScale;
+		Info.StarvationPriorityScale = StarvationPriorityScale;
+		Info.CullDistanceSquared = CullDistanceSquared;
+		Info.ReplicationPeriodFrame = ReplicationPeriodFrame;
+		Info.ActorChannelFrameTimeout = ActorChannelFrameTimeout;
+		return Info;
+	}
+};
+
 
 struct LOCUSREPLICATIONGRAPH_API FTeamConnectionListMap : public TMap<FName, TArray<ULocusReplicationConnectionGraph*>>
 {
@@ -90,6 +133,29 @@ class LOCUSREPLICATIONGRAPH_API ULocusReplicationGraph : public UReplicationGrap
 	GENERATED_BODY()
 	
 public:
+	//settings
+	UPROPERTY(EditDefaultsOnly)
+	float DestructionInfoMaxDistance = 30000.f;
+
+	UPROPERTY(EditDefaultsOnly)
+	bool DisplayClientLevelStreaming = false;
+
+	UPROPERTY(EditDefaultsOnly)
+	float SpacialCellSize = 10000.f;
+
+	UPROPERTY(EditDefaultsOnly)
+	FVector2D SpatialBias = FVector2D(-150000.f, -200000.f);
+
+	UPROPERTY(EditDefaultsOnly)
+	bool EnableSpatialRebuilds = false;
+
+	UPROPERTY(EditDefaultsOnly)
+	TArray<FClassReplicationPolicyBP> ReplicationPolicySettings;
+
+	UPROPERTY(EditDefaultsOnly)
+	TArray<FClassReplicationInfoBP> ReplicationInfoSettings;
+	
+public:
 
 	ULocusReplicationGraph();
 
@@ -134,14 +200,6 @@ public:
 	//SetTeam via Name
 	void SetTeamForPlayerController(APlayerController* PlayerController, FName TeamName);
 
-	//virtual function for native implementation
-	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Replication")
-	void OnCustomClassNodeMapping();
-	virtual void OnCustomClassNodeMapping_Implementation();
-
-	UFUNCTION(BlueprintCallable, Category="Replication")
-	void AddCustomClassMapping(UClass* Class, EClassRepNodeMapping ClassRepNodeMapping);
-
 	//to handle actors that has no connection at addnofity execution
 	void RouteAddNetworkActorToConnectionNodes(EClassRepNodeMapping Policy, const FNewReplicatedActorInfo& ActorInfo, FGlobalActorReplicationInfo& GlobalInfo);
 	void RouteRemoveNetworkActorToConnectionNodes(EClassRepNodeMapping Policy, const FNewReplicatedActorInfo& ActorInfo);
@@ -157,8 +215,6 @@ public:
 	void PrintRepNodePolicies();
 
 private:
-
-	bool IsSettingCustomMapping = false;
 
 	EClassRepNodeMapping GetMappingPolicy(const UClass* Class);
 
