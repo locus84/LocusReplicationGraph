@@ -15,16 +15,23 @@ class ULocusReplicationConnectionGraph;
 UENUM(BlueprintType)
 enum class EClassRepNodeMapping : uint8
 {
-	NotRouted,						// Doesn't map to any node. Used for special case actors that handled by special case nodes (UShooterReplicationGraphNode_PlayerStateFrequencyLimiter)
-	RelevantAllConnections,			// Routes to an AlwaysRelevantNode or AlwaysRelevantStreamingLevelNode node
-	RelevantOwnerConnection,			// Routes to an AlwaysRelevantNode or AlwaysRelevantStreamingLevelNode node
-	RelevantTeamConnection,			// Routes to an TeamRelevantNode
+	// Does not route to any node. Special case when you want to control manual way.
+	NotRouted,						
+	// Routes to an AlwaysRelevantNode
+	RelevantAllConnections,			
+	// Routes to an AlwaysRelevantNode_ForConnection node
+	RelevantOwnerConnection,			
+	// Routes to an AlwaysRelevantNode_ForTeam node
+	RelevantTeamConnection,			
 
 	// ONLY SPATIALIZED Enums below here! See UReplicationGraphBase::IsSpatialized
 
-	Spatialize_Static,				// Routes to GridNode: these actors don't move and don't need to be updated every frame.
-	Spatialize_Dynamic,				// Routes to GridNode: these actors mode frequently and are updated once per frame.
-	Spatialize_Dormancy,			// Routes to GridNode: While dormant we treat as static. When flushed/not dormant dynamic. Note this is for things that "move while not dormant".
+	// Routes to GridNode: these actors don't move and don't need to be updated every frame.
+	Spatialize_Static,				
+	// Routes to GridNode: these actors mode frequently and are updated once per frame.
+	Spatialize_Dynamic,				
+	// Routes to GridNode: While dormant we treat as static. When flushed/not dormant dynamic. Note this is for things that "move while not dormant".
+	Spatialize_Dormancy,
 };
 
 
@@ -36,39 +43,47 @@ struct FTeamRequest
 };
 
 
-
 USTRUCT(BlueprintType)
-struct LOCUSREPLICATIONGRAPH_API FClassReplicationPolicyBP
+struct LOCUSREPLICATIONGRAPH_API FClassReplicationPolicyPreset
 {
 	GENERATED_BODY()
 public:
+	// Class to set replication policy.
 	UPROPERTY(EditAnywhere)
 	TSubclassOf<AActor> Class;
+	// Policy to set.
 	UPROPERTY(EditAnywhere)
 	EClassRepNodeMapping Policy;
 };
 
 
 USTRUCT(BlueprintType)
-struct LOCUSREPLICATIONGRAPH_API FClassReplicationInfoBP
+struct LOCUSREPLICATIONGRAPH_API FClassReplicationInfoPreset
 {
 	GENERATED_BODY()
 public:
 
+	// Class of this Replication info is related
 	UPROPERTY(EditAnywhere)
 	TSubclassOf<AActor> Class;
-	UPROPERTY(EditAnywhere)
+	// How much will distance affect to priority
+	UPROPERTY(EditAnywhere, meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
 	float DistancePriorityScale = 1.f;
-	UPROPERTY(EditAnywhere)
+	// How much will stavation affect to priority
+	UPROPERTY(EditAnywhere, meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
 	float StarvationPriorityScale = 1.f;
-	UPROPERTY(EditAnywhere)
+	// Cull distance that overrides NetCullDistance (Warning : IsNetRelevantFor will not be called in this system)
+	UPROPERTY(EditAnywhere, meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float CullDistanceSquared = 0.f;
-	UPROPERTY(EditAnywhere)
+	//Server frame count per actual replication
+	UPROPERTY(EditAnywhere, meta = (ClampMin = "0.0", UIMin = "0.0"))
 	uint8 ReplicationPeriodFrame = 1;
-	UPROPERTY(EditAnywhere)
+	// How long will this actor channel stay alive even after it's being out of relevancy
+	UPROPERTY(EditAnywhere, meta = (ClampMin = "0.0", UIMin = "0.0"))
 	uint8 ActorChannelFrameTimeout = 4;
+	// Whether this setting overrides all child classes or not
 	UPROPERTY(EditAnywhere)
-	bool IncludeChildClass = true;
+	bool IncludeChildClasses = true;
 
 	FClassReplicationInfo CreateClassReplicationInfo()
 	{
@@ -144,27 +159,28 @@ class LOCUSREPLICATIONGRAPH_API ULocusReplicationGraph : public UReplicationGrap
 	GENERATED_BODY()
 	
 public:
-	//settings
-	UPROPERTY(EditDefaultsOnly)
+	
+	// How far destruction infos will be sent. When server destroyed an actor that is NetLoadOnClient tick is on
+	UPROPERTY(EditDefaultsOnly, meta = (ClampMin = "1000.0", ClampMax = "100000.0", UIMin = "1000.0", UIMax = "100000.0"))
 	float DestructionInfoMaxDistance = 30000.f;
 
-	UPROPERTY(EditDefaultsOnly)
-	bool DisplayClientLevelStreaming = false;
-
-	UPROPERTY(EditDefaultsOnly)
+	// Cell size of spatial gird.
+	UPROPERTY(EditDefaultsOnly, meta = (ClampMin = "1000.0", ClampMax = "100000.0", UIMin = "1000.0", UIMax = "100000.0"))
 	float SpacialCellSize = 10000.f;
 
+	// Spatial grid out of bound bias. Better not change this.
 	UPROPERTY(EditDefaultsOnly)
 	FVector2D SpatialBias = FVector2D(-150000.f, -200000.f);
 
+	// Should spatial grid rebuilt upon detecting an actor that is out of bias?
 	UPROPERTY(EditDefaultsOnly)
 	bool EnableSpatialRebuilds = false;
 
 	UPROPERTY(EditDefaultsOnly)
-	TArray<FClassReplicationPolicyBP> ReplicationPolicySettings;
+	TArray<FClassReplicationPolicyPreset> ReplicationPolicySettings;
 
 	UPROPERTY(EditDefaultsOnly)
-	TArray<FClassReplicationInfoBP> ReplicationInfoSettings;
+	TArray<FClassReplicationInfoPreset> ReplicationInfoSettings;
 	
 public:
 

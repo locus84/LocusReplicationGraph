@@ -15,7 +15,7 @@ ULocusReplicationGraph::ULocusReplicationGraph()
 {
 	ReplicationConnectionManagerClass = ULocusReplicationConnectionGraph::StaticClass();
 
-	FClassReplicationInfoBP PawnClassRepInfo;
+	FClassReplicationInfoPreset PawnClassRepInfo;
 	PawnClassRepInfo.Class = APawn::StaticClass();
 	PawnClassRepInfo.DistancePriorityScale = 1.f;
 	PawnClassRepInfo.StarvationPriorityScale = 1.f;
@@ -73,7 +73,7 @@ void ULocusReplicationGraph::InitGlobalActorClassSettings()
 	AddInfo(AGameplayDebuggerCategoryReplicator::StaticClass(), EClassRepNodeMapping::RelevantOwnerConnection);	// Only owner connection viable
 #endif
 
-	for (FClassReplicationPolicyBP PolicyBP : ReplicationPolicySettings)
+	for (FClassReplicationPolicyPreset PolicyBP : ReplicationPolicySettings)
 	{
 		if (PolicyBP.Class)
 		{
@@ -155,9 +155,9 @@ void ULocusReplicationGraph::InitGlobalActorClassSettings()
 		//TODO:: currently missing feature, !bAlwaysRelevant && bOnlyRelevantToOwner -> only owner see this but is spatialized
 	}
 
-	TArray<FClassReplicationInfoBP> ValidClassReplicationInfoPreset;
+	TArray<FClassReplicationInfoPreset> ValidClassReplicationInfoPreset;
 	//custom setting
-	for (FClassReplicationInfoBP& ReplicationInfoBP : ReplicationInfoSettings)
+	for (FClassReplicationInfoPreset& ReplicationInfoBP : ReplicationInfoSettings)
 	{
 		if (ReplicationInfoBP.Class)
 		{
@@ -171,10 +171,10 @@ void ULocusReplicationGraph::InitGlobalActorClassSettings()
 	// Set FClassReplicationInfo based on legacy settings from all replicated classes
 	for (UClass* ReplicatedClass : AllReplicatedClasses)
 	{
-		if (FClassReplicationInfoBP* Preset = ValidClassReplicationInfoPreset.FindByPredicate([&](const FClassReplicationInfoBP& Info) { return ReplicatedClass->IsChildOf(Info.Class.Get());  }))
+		if (FClassReplicationInfoPreset* Preset = ValidClassReplicationInfoPreset.FindByPredicate([&](const FClassReplicationInfoPreset& Info) { return ReplicatedClass->IsChildOf(Info.Class.Get());  }))
 		{
 			//duplicated or set included child will be ignored
-			if (Preset->Class.Get() == ReplicatedClass || Preset->IncludeChildClass)
+			if (Preset->Class.Get() == ReplicatedClass || Preset->IncludeChildClasses)
 			{
 				continue;
 			}
