@@ -8,6 +8,7 @@ void ULocusReplicationBPHelpers::SetTeamForPlayerController(APlayerController* P
 	if (ULocusReplicationGraph* LocusGraph = FindLocusReplicationGraph(Player))
 	{
 		LocusGraph->SetTeamForPlayerController(Player, TeamName);
+		return;
 	}
 
 	UE_LOG(LogLocusReplicationGraph, Warning, TEXT("LocusReplicationGraph not found"));
@@ -18,6 +19,7 @@ void ULocusReplicationBPHelpers::AddDependentActor(AActor* ReplicatorActor, AAct
 	if (ULocusReplicationGraph* LocusGraph = FindLocusReplicationGraph(ReplicatorActor))
 	{
 		LocusGraph->AddDependentActor(ReplicatorActor, DependentActor);
+		return;
 	}
 
 	UE_LOG(LogLocusReplicationGraph, Warning, TEXT("LocusReplicationGraph not found"));
@@ -28,6 +30,7 @@ void ULocusReplicationBPHelpers::RemoveDependentActor(AActor* ReplicatorActor, A
 	if (ULocusReplicationGraph* LocusGraph = FindLocusReplicationGraph(ReplicatorActor))
 	{
 		LocusGraph->RemoveDependentActor(ReplicatorActor, DependentActor);
+		return;
 	}
 
 	UE_LOG(LogLocusReplicationGraph, Warning, TEXT("LocusReplicationGraph not found"));
@@ -38,6 +41,7 @@ void ULocusReplicationBPHelpers::ChangeOwnerAndRefreshReplication(AActor* ActorT
 	if (ULocusReplicationGraph* LocusGraph = FindLocusReplicationGraph(ActorToChange))
 	{
 		LocusGraph->ChangeOwnerOfAnActor(ActorToChange, NewOwner);
+		return;
 	}
 
 	UE_LOG(LogLocusReplicationGraph, Warning, TEXT("LocusReplicationGraph not found"));
