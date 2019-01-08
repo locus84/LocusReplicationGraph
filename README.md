@@ -21,10 +21,10 @@ It provides api that add/remove dependent actors(c++/blueprint).
 
 3. UnZip/Paste downloaded files into Plugins/LocusReplicationGraph.
 
-4. Open project, under Edit/Plugins window enable LocusReplicationGraphPlugin in Project/Networking. This step requires restart/compile.
+4. Open project, under Edit/Plugins window, enable LocusReplicationGraphPlugin in Project/Networking. This step requires restart/compile.
 ![enableplugin](https://user-images.githubusercontent.com/6591432/50825525-9a78ef00-137c-11e9-973b-07614cc0a91e.PNG)
 
-5. Now, create your blueprint class inherit from LocusReplicationGraph. Do required settings there.
+5. Now, create your blueprint class and inherit from LocusReplicationGraph. Do required settings there.
 ![createblueprint](https://user-images.githubusercontent.com/6591432/50824559-410fc080-137a-11e9-8927-e6698219c19f.PNG)
 
 6. Open up Config/DefaultEngine.ini then add
@@ -42,6 +42,27 @@ ReplicationDriverClassName="/Game/Blueprints/Online/CustomReplicationGraph.Custo
 ```text
 LocusRepGraph.PrintRouting
 ```
+
+## How to use it.
+
+After installation, open up created blueprint class.
+In Class default details, there are some settings that you may customize to fit your own game.
+Each of these values have simple description you can check when you hover your mouse.
+
+During play, you can access ReplicationGraph's functionality with given library functions.  
+
+1. **Add/Remove Dependent Actor.**
+  * Add/Remove Dependent actor to Replicator's dependent actor list. Whenever Replicator actor replicates, DependentActor will replicate either. 
+  * Dependent Actor should not routed to any nodes(but bReplicated=true), as well as Replicator actor should be currently networked.
+  
+2. **Set Team for Player Controller.**
+  * Set Team name for a APlayerController. Name_None does not have team(default)
+  * Routed Policy Relevant Team Connection will show your owned Actors to teammates
+  
+3. **Change Owner and Refresh Replication.**
+  * As we don't collect all replicated actor's owner during playtime, you have to tell exactly which actor want to change it's owner.
+  * Actor will be out of ReplicationRgaph, and back to it after changing owner(inside function)
+
 
 
 ## Limitations
