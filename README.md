@@ -88,4 +88,9 @@ But most of MMO server implementation, there usually is a system AKA **Interest 
 
 A ReplicationGraph is collection of ReplicationGraphNodes. A ReplicationGraphNode is a main building block that calculates actor relevancy for a connection. There are many kind of ReplicationGraphNode that completes ReplicationGraph functionality. AlwaysRelevant Node(AGameState), GridSpatialization2D Node(Actors culled by NetCullDistance), AlwaysRelevantForConnection Node(APlayerController, APlayerState) are one of these.
 
+## References  
 
+https://docs.unrealengine.com/en-us/Engine/Networking/ReplicationGraph  
+https://www.youtube.com/watch?v=CDnNAAzgltw  
+
+Thank you!
