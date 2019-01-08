@@ -16,7 +16,12 @@ It provides api that add/remove dependent actors(c++/blueprint).
 
 It has same limitations that original replication graph has.
 For performance reasons, only initial setup is exposed to blueprints.
-Exceptions are setting team, owner, dependent actor.
+Exceptions are setting team, owner, dependent actor.  
+
+This plugin does not support complex owner chain. It only look for it's NetOwner at spawn time.
+If you want to change owner after spawn, use provided function.  
+If A owns B, and B owns C. changing owner should be from bottom to top. C->B->A.  
+This is for performance reason. I don't want to find and look up all possible actors per a frame.
 
 ## What the hell is ReplicationGraph
 
