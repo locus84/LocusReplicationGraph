@@ -32,7 +32,7 @@ It provides api that add/remove dependent actors(c++/blueprint).
 [/Script/OnlineSubsystemUtils.IpNetDriver] 
 ReplicationDriverClassName="[Your custom blueprint created in step 5]"
 ```
-this usually looks like this
+  *this usually looks like this
 ```text
 ReplicationDriverClassName="/Game/Blueprints/Online/CustomReplicationGraph.CustomReplicationGraph_C"
 ```
@@ -47,9 +47,11 @@ LocusRepGraph.PrintRouting
 
 After installation, open up created blueprint class.
 In Class default details, there are some settings that you may customize to fit your own game.
+![classdefaults](https://user-images.githubusercontent.com/6591432/50826680-a914d580-137f-11e9-98d0-5f2a5dae104e.PNG)  
 Each of these values have simple description you can check when you hover your mouse.
 
 During play, you can access ReplicationGraph's functionality with given library functions.  
+![blueprintfunctionlist](https://user-images.githubusercontent.com/6591432/50826684-ac0fc600-137f-11e9-818d-4f57e5c08b99.PNG)  
 
 1. **Add/Remove Dependent Actor.**
   * Add/Remove Dependent actor to Replicator's dependent actor list. Whenever Replicator actor replicates, DependentActor will replicate either. 
