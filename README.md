@@ -12,6 +12,33 @@ It supports actors that only relevant to owner connection.
 It supports actors that only relevant to team connections.  
 It provides api that add/remove dependent actors(c++/blueprint).  
 
+## How to install
+
+1. Download or clone this repo.
+
+2. Create "Plugins" folder in root folder of your project.
+
+3. UnZip/Paste downloaded files into Plugins/LocusReplicationGraph.
+
+4. Open project, under Edit/Plugins window enable LocusReplicationGraphPlugin in Project/Networking. This step requires restart/compile.
+
+5. Now, create your blueprint class inherit from LocusReplicationGraph. Do required settings there.
+
+6. Open up Config/DefaultEngine.ini then add
+```text
+[/Script/OnlineSubsystemUtils.IpNetDriver] 
+ReplicationDriverClassName="[Your custom blueprint created in step 5]"
+```
+this usually looks like this
+```text
+ReplicationDriverClassName="/Game/Blueprints/Online/CustomReplicationGraph.CustomReplicationGraph_C"
+```
+7. Play game in network mode and type console command blow to ensure it works
+```text
+LocusRepGraph.PrintRouting
+```
+
+
 ## Limitations
 
 It has same limitations that original replication graph has.
