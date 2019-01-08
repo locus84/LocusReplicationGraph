@@ -7,6 +7,7 @@ As Epic provides a good example of ReplicationGraph in **ShooterGame** project, 
 
 ## What it does
 
+Basic functionality that ReplicationGraph provies + 
 It expose basic control of ReplicationGraph to Blueprints.  
 It supports actors that only relevant to owner connection.  
 It supports actors that only relevant to team connections.  
