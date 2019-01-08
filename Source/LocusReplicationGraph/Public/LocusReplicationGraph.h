@@ -28,14 +28,23 @@ enum class EClassRepNodeMapping : uint8
 };
 
 
+struct FTeamRequest
+{
+	FName TeamName;
+	APlayerController* Requestor;
+	FTeamRequest(FName InTeamName, APlayerController* PC):TeamName(InTeamName), Requestor(PC) {}
+};
+
+
+
 USTRUCT(BlueprintType)
 struct LOCUSREPLICATIONGRAPH_API FClassReplicationPolicyBP
 {
 	GENERATED_BODY()
 public:
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(EditAnywhere)
 	TSubclassOf<AActor> Class;
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(EditAnywhere)
 	EClassRepNodeMapping Policy;
 };
 
@@ -58,6 +67,8 @@ public:
 	uint8 ReplicationPeriodFrame = 1;
 	UPROPERTY(EditAnywhere)
 	uint8 ActorChannelFrameTimeout = 4;
+	UPROPERTY(EditAnywhere)
+	bool IncludeChildClass = true;
 
 	FClassReplicationInfo CreateClassReplicationInfo()
 	{
@@ -91,9 +102,9 @@ class LOCUSREPLICATIONGRAPH_API UReplicationGraphNode_AlwaysRelevant_WithPending
 {
 	GENERATED_BODY()
 
-	public:
-	//Gather up other team member's list 
-	virtual void GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params) override;
+public:
+	UReplicationGraphNode_AlwaysRelevant_WithPending();
+	virtual void PrepareForReplication() override;
 };
 
 UCLASS()
@@ -203,7 +214,9 @@ public:
 	//to handle actors that has no connection at addnofity execution
 	void RouteAddNetworkActorToConnectionNodes(EClassRepNodeMapping Policy, const FNewReplicatedActorInfo& ActorInfo, FGlobalActorReplicationInfo& GlobalInfo);
 	void RouteRemoveNetworkActorToConnectionNodes(EClassRepNodeMapping Policy, const FNewReplicatedActorInfo& ActorInfo);
-	void HandlePendingActorsForConnection(UNetReplicationGraphConnection& ConnectionManager);
+
+	//handle pending team requests and notifies
+	void HandlePendingActorsAndTeamRequests();
 
 	ULocusReplicationConnectionGraph* FindLocusConnectionGraph(const AActor* Actor);
 
@@ -226,5 +239,6 @@ private:
 	FTeamConnectionListMap TeamConnectionListMap;
 
 	TArray<AActor*> PendingConnectionActors;
-	TMap<FName, FName> PendingTeamRequests;
+	TArray<FTeamRequest> PendingTeamRequests;
+
 };

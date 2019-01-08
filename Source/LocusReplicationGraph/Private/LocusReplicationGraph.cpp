@@ -20,7 +20,10 @@ ULocusReplicationGraph::ULocusReplicationGraph()
 	PawnClassRepInfo.DistancePriorityScale = 1.f;
 	PawnClassRepInfo.StarvationPriorityScale = 1.f;
 	PawnClassRepInfo.ActorChannelFrameTimeout = 4;
+	//small size of cull distance squard leads inconsistant cull becuase of distance between actual character and viewposition
+	//keep it bigger than distance between actual pawn and inviewer
 	PawnClassRepInfo.CullDistanceSquared = 15000.f * 15000.f;
+	ReplicationInfoSettings.Add(PawnClassRepInfo);
 }
 
 void InitClassReplicationInfo(FClassReplicationInfo& Info, UClass* Class, bool bSpatialize, float ServerMaxTickRate)
@@ -72,7 +75,10 @@ void ULocusReplicationGraph::InitGlobalActorClassSettings()
 
 	for (FClassReplicationPolicyBP PolicyBP : ReplicationPolicySettings)
 	{
-		AddInfo(PolicyBP.Class, PolicyBP.Policy);
+		if (PolicyBP.Class)
+		{
+			AddInfo(PolicyBP.Class, PolicyBP.Policy);
+		}
 	}
 
 	//this does contains all replicated class except GetIsReplicated is false actor
@@ -149,34 +155,29 @@ void ULocusReplicationGraph::InitGlobalActorClassSettings()
 		//TODO:: currently missing feature, !bAlwaysRelevant && bOnlyRelevantToOwner -> only owner see this but is spatialized
 	}
 
-	// -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-	// Setup FClassReplicationInfo. This is essentially the per class replication settings. Some we set explicitly, the rest we are setting via looking at the legacy settings on AActor.
-	// -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-	TArray<UClass*> ExplicitlySetClasses;
-	auto SetClassInfo = [&](UClass* Class, const FClassReplicationInfo& Info) { GlobalActorReplicationInfoMap.SetClassInfo(Class, Info); ExplicitlySetClasses.Add(Class); };
-
-	for (FClassReplicationInfoBP ReplicationInfoBP : ReplicationInfoSettings)
+	TArray<FClassReplicationInfoBP> ValidClassReplicationInfoPreset;
+	//custom setting
+	for (FClassReplicationInfoBP& ReplicationInfoBP : ReplicationInfoSettings)
 	{
-		SetClassInfo(ReplicationInfoBP.Class, ReplicationInfoBP.CreateClassReplicationInfo());
+		if (ReplicationInfoBP.Class)
+		{
+			GlobalActorReplicationInfoMap.SetClassInfo(ReplicationInfoBP.Class, ReplicationInfoBP.CreateClassReplicationInfo());
+			ValidClassReplicationInfoPreset.Add(ReplicationInfoBP);
+		}
 	}
-	//FClassReplicationInfo PawnClassRepInfo;
-	//PawnClassRepInfo.DistancePriorityScale = 1.f;
-	//PawnClassRepInfo.StarvationPriorityScale = 1.f;
-	//PawnClassRepInfo.ActorChannelFrameTimeout = 4;
-	//PawnClassRepInfo.CullDistanceSquared = 15000.f * 15000.f; // Yuck
-	//SetClassInfo(APawn::StaticClass(), PawnClassRepInfo);
-
-
 
 	UReplicationGraphNode_ActorListFrequencyBuckets::DefaultSettings.ListSize = 12;
 
 	// Set FClassReplicationInfo based on legacy settings from all replicated classes
 	for (UClass* ReplicatedClass : AllReplicatedClasses)
 	{
-		if (ExplicitlySetClasses.FindByPredicate([&](const UClass* SetClass) { return ReplicatedClass->IsChildOf(SetClass); }) != nullptr)
+		if (FClassReplicationInfoBP* Preset = ValidClassReplicationInfoPreset.FindByPredicate([&](const FClassReplicationInfoBP& Info) { return ReplicatedClass->IsChildOf(Info.Class.Get());  }))
 		{
-			continue;
+			//duplicated or set included child will be ignored
+			if (Preset->Class.Get() == ReplicatedClass || Preset->IncludeChildClass)
+			{
+				continue;
+			}
 		}
 
 		const bool bClassIsSpatialized = IsSpatialized(ClassRepNodePolicies.GetChecked(ReplicatedClass));
@@ -415,12 +416,32 @@ void ULocusReplicationGraph::RouteRemoveNetworkActorToNodes(const FNewReplicated
 	};
 }
 
+//this function will be called seamless map transition
+//as all actors will be removed in silly order, we have to deal with it
 void ULocusReplicationGraph::ResetGameWorldState()
 {
 	Super::ResetGameWorldState();
+
+	//all actor will be destroyed. just reset it.
 	PendingConnectionActors.Reset();
 	PendingTeamRequests.Reset();
-	TeamConnectionListMap.Reset();
+
+	auto EmptyConnectionNode = [](TArray<UNetReplicationGraphConnection*>& Connections)
+	{
+		for (UNetReplicationGraphConnection* ConnManager : Connections)
+		{
+			if (ULocusReplicationConnectionGraph* LocusConnManager = Cast<ULocusReplicationConnectionGraph>(ConnManager))
+			{
+				LocusConnManager->AlwaysRelevantForConnectionNode->NotifyResetAllNetworkActors();
+			}
+		}
+	};
+
+	EmptyConnectionNode(PendingConnections);
+	EmptyConnectionNode(Connections);
+
+	//as connection does not destroyed, we keep it
+	//TeamConnectionListMap.Reset();
 }
 
 // Since we listen to global (static) events, we need to watch out for cross world broadcasts (PIE)
@@ -501,7 +522,7 @@ void ULocusReplicationGraph::SetTeamForPlayerController(APlayerController* Playe
 		}
 		else
 		{
-			PendingTeamRequests.Add(PlayerController->GetFName(), NextTeam);
+			PendingTeamRequests.Emplace(NextTeam, PlayerController);
 		}
 	}
 }
@@ -557,54 +578,39 @@ void ULocusReplicationGraph::RouteRemoveNetworkActorToConnectionNodes(EClassRepN
 	}
 }
 
-void ULocusReplicationGraph::HandlePendingActorsForConnection(UNetReplicationGraphConnection& ConnectionManager)
+void ULocusReplicationGraph::HandlePendingActorsAndTeamRequests()
 {
-	//we don't have to care
 	if(PendingTeamRequests.Num() > 0)
 	{
-		if (ConnectionManager.NetConnection->PlayerController)
+		TArray<FTeamRequest> TempRequests = MoveTemp(PendingTeamRequests);
+
+		for (FTeamRequest& Request : TempRequests)
 		{
-			FName TeamName;
-			if (PendingTeamRequests.RemoveAndCopyValue(ConnectionManager.NetConnection->PlayerController->GetFName(), TeamName))
+			if (Request.Requestor && Request.Requestor->IsValidLowLevel())
 			{
-				SetTeamForPlayerController(ConnectionManager.NetConnection->PlayerController, TeamName);
+				//if failed, it will automatically re-added to pending list
+				SetTeamForPlayerController(Request.Requestor, Request.TeamName);
 			}
 		}
 	}
 
-
 	if (PendingConnectionActors.Num() > 0)
 	{
-		PendingConnectionActors.RemoveAll([&](AActor* Actor)
+		TArray<AActor*> TempActors = MoveTemp(PendingConnectionActors);
+
+		for (AActor* Actor : TempActors)
 		{
-			//invalid actor
-			if (!UKismetSystemLibrary::IsValid(Actor))
+			if (Actor && Actor->IsValidLowLevel())
 			{
-				//remove
-				return true;
+				if (UNetConnection* Connection = Actor->GetNetConnection())
+				{
+					//if failed, it will automatically re-added to pending list
+					EClassRepNodeMapping Policy = GetMappingPolicy(Actor->GetClass());
+					FGlobalActorReplicationInfo& GlobalInfo = GlobalActorReplicationInfoMap.Get(Actor);
+					RouteAddNetworkActorToConnectionNodes(Policy, FNewReplicatedActorInfo(Actor), GlobalInfo);
+				}
 			}
-
-			//for other connection
-			UNetConnection* Connection = Actor->GetNetConnection();
-
-			if (!Connection)
-			{
-				//no connection. remove
-				return true;
-			}
-
-			if (Connection != ConnectionManager.NetConnection)
-			{
-				//this is for other connection. keep it
-				return false;
-			}
-
-			//re-route actor add
-			EClassRepNodeMapping Policy = GetMappingPolicy(Actor->GetClass());
-			FGlobalActorReplicationInfo& GlobalInfo = GlobalActorReplicationInfoMap.Get(Actor);
-			RouteAddNetworkActorToConnectionNodes(Policy, FNewReplicatedActorInfo(Actor), GlobalInfo);
-			return true;
-		});
+		}
 	}
 }
 
@@ -691,15 +697,16 @@ void UReplicationGraphNode_AlwaysRelevant_ForTeam::GatherActorListsForConnection
 	}
 }
 
-
-void UReplicationGraphNode_AlwaysRelevant_WithPending::GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params)
+UReplicationGraphNode_AlwaysRelevant_WithPending::UReplicationGraphNode_AlwaysRelevant_WithPending()
 {
-	//we have to handle pending actors first
-	ULocusReplicationGraph* ReplicationGraph = Cast<ULocusReplicationGraph>(GetOuter());
-	ReplicationGraph->HandlePendingActorsForConnection(Params.ConnectionManager);
-	Super::GatherActorListsForConnection(Params);
+	bRequiresPrepareForReplicationCall = true;
 }
 
+void UReplicationGraphNode_AlwaysRelevant_WithPending::PrepareForReplication()
+{
+	ULocusReplicationGraph* ReplicationGraph = Cast<ULocusReplicationGraph>(GetOuter());
+	ReplicationGraph->HandlePendingActorsAndTeamRequests();
+}
 
 void UReplicationGraphNode_AlwaysRelevant_ForTeam::GatherActorListsForConnectionDefault(const FConnectionGatherActorListParameters& Params)
 {
