@@ -457,12 +457,17 @@ void ULocusReplicationGraph::AddDependentActor(AActor* ReplicatorActor, AActor* 
 	{
 		CHECK_WORLDS(ReplicatorActor);
 
-		FGlobalActorReplicationInfo& ActorInfo = GlobalActorReplicationInfoMap.Get(ReplicatorActor);
-		ActorInfo.DependentActorList.PrepareForWrite();
-
-		if (!ActorInfo.DependentActorList.Contains(DependentActor))
+		if (FGlobalActorReplicationInfo* ReplicationInfo = GlobalActorReplicationInfoMap.Find(ReplicatorActor))
 		{
-			ActorInfo.DependentActorList.Add(DependentActor);
+			ReplicationInfo->DependentActorList.PrepareForWrite();
+			if (!ReplicationInfo->DependentActorList.Contains(DependentActor))
+			{
+				ReplicationInfo->DependentActorList.Add(DependentActor);
+			}
+		}
+		else
+		{
+			UE_LOG(LogLocusReplicationGraph, Warning, TEXT("ReplicatorActor privided is not replicating"));
 		}
 	}
 }
@@ -473,9 +478,15 @@ void ULocusReplicationGraph::RemoveDependentActor(AActor* ReplicatorActor, AActo
 	{
 		CHECK_WORLDS(ReplicatorActor);
 
-		FGlobalActorReplicationInfo& ActorInfo = GlobalActorReplicationInfoMap.Get(ReplicatorActor);
-		ActorInfo.DependentActorList.PrepareForWrite();
-		ActorInfo.DependentActorList.Remove(DependentActor);
+		if (FGlobalActorReplicationInfo* ReplicationInfo = GlobalActorReplicationInfoMap.Find(ReplicatorActor))
+		{
+			ReplicationInfo->DependentActorList.PrepareForWrite();
+			ReplicationInfo->DependentActorList.Remove(DependentActor);
+		}
+		else
+		{
+			UE_LOG(LogLocusReplicationGraph, Warning, TEXT("ReplicatorActor privided is not replicating"));
+		}
 	}
 }
 
