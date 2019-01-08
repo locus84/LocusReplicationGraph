@@ -46,7 +46,7 @@ LocusRepGraph.PrintRouting
 ## How to use it.
 
 After installation, open up created blueprint class.
-In Class default details, there are some settings that you may customize to fit your own game.
+In Class default details, there are some settings that you may customize to fit your own game.  
 ![classdefaults](https://user-images.githubusercontent.com/6591432/50826680-a914d580-137f-11e9-98d0-5f2a5dae104e.PNG)  
 Each of these values have simple description you can check when you hover your mouse.
 
