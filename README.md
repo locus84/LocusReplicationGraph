@@ -21,8 +21,10 @@ It provides api that add/remove dependent actors(c++/blueprint).
 3. UnZip/Paste downloaded files into Plugins/LocusReplicationGraph.
 
 4. Open project, under Edit/Plugins window enable LocusReplicationGraphPlugin in Project/Networking. This step requires restart/compile.
+![enableplugin](https://user-images.githubusercontent.com/6591432/50825525-9a78ef00-137c-11e9-973b-07614cc0a91e.PNG)
 
 5. Now, create your blueprint class inherit from LocusReplicationGraph. Do required settings there.
+![createblueprint](https://user-images.githubusercontent.com/6591432/50824559-410fc080-137a-11e9-8927-e6698219c19f.PNG)
 
 6. Open up Config/DefaultEngine.ini then add
 ```text
@@ -33,6 +35,8 @@ this usually looks like this
 ```text
 ReplicationDriverClassName="/Game/Blueprints/Online/CustomReplicationGraph.CustomReplicationGraph_C"
 ```
+![defaultengine](https://user-images.githubusercontent.com/6591432/50824553-3d7c3980-137a-11e9-9e9f-de9bf2808a2f.jpg)
+
 7. Play game in network mode and type console command blow to ensure it works
 ```text
 LocusRepGraph.PrintRouting
