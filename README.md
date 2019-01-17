@@ -1,4 +1,4 @@
-# LocusReplicationGraph
+# Locus Replication Graph
 
 This is an extension of ReplicationGraph plugin introduced in UE 4.20.
 It contains a few blueprint library functions that controls replication graph.
