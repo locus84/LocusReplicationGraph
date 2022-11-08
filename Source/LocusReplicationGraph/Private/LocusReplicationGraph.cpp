@@ -1,4 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
 
 #include "LocusReplicationGraph.h"
 #include "Engine/LevelScriptActor.h"
@@ -31,8 +30,8 @@ void InitClassReplicationInfo(FClassReplicationInfo& Info, UClass* Class, bool b
 	AActor* CDO = Class->GetDefaultObject<AActor>();
 	if (bSpatialize)
 	{
-		Info.CullDistanceSquared = CDO->NetCullDistanceSquared;
-		UE_LOG(LogLocusReplicationGraph, Log, TEXT("Setting cull distance for %s to %f (%f)"), *Class->GetName(), Info.CullDistanceSquared, FMath::Sqrt(Info.CullDistanceSquared));
+		Info.SetCullDistanceSquared(CDO->NetCullDistanceSquared);
+		UE_LOG(LogLocusReplicationGraph, Log, TEXT("Setting cull distance for %s to %f (%f)"), *Class->GetName(), Info.GetCullDistanceSquared(), FMath::Sqrt(Info.GetCullDistanceSquared()));
 	}
 
 	Info.ReplicationPeriodFrame = FMath::Max<uint32>((uint32)FMath::RoundToFloat(ServerMaxTickRate / CDO->NetUpdateFrequency), 1);
@@ -194,17 +193,16 @@ void ULocusReplicationGraph::InitGlobalActorClassSettings()
 	UEnum* Enum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EClassRepNodeMapping"));
 	for (auto ClassMapIt = ClassRepNodePolicies.CreateIterator(); ClassMapIt; ++ClassMapIt)
 	{
-		const UClass* Class = CastChecked<UClass>(ClassMapIt.Key().ResolveObjectPtr());
+		UClass* Class = CastChecked<UClass>(ClassMapIt.Key().ResolveObjectPtr());
 		const EClassRepNodeMapping Mapping = ClassMapIt.Value();
 
 		// Only print if different than native class
-		const UClass* ParentNativeClass = GetParentNativeClass(Class);
+		UClass* ParentNativeClass = GetParentNativeClass(Class);
 		const EClassRepNodeMapping* ParentMapping = ClassRepNodePolicies.Get(ParentNativeClass);
 		if (ParentMapping && Class != ParentNativeClass && Mapping == *ParentMapping)
 		{
 			continue;
 		}
-
 		UE_LOG(LogLocusReplicationGraph, Log, TEXT("  %s (%s) -> %s"), *Class->GetName(), *GetNameSafe(ParentNativeClass), *Enum->GetNameStringByValue(static_cast<uint32>(Mapping)));
 	}
 
@@ -230,10 +228,10 @@ void ULocusReplicationGraph::InitGlobalActorClassSettings()
 void ULocusReplicationGraph::InitGlobalGraphNodes()
 {
 	// Preallocate some replication lists.
-	PreAllocateRepList(3, 12);
+	/*PreAllocateRepList(3, 12);
 	PreAllocateRepList(6, 12);
 	PreAllocateRepList(128, 64);
-	PreAllocateRepList(512, 16);
+	PreAllocateRepList(512, 16);*/
 
 	// -----------------------------------------------
 	//	Spatial Actors
@@ -314,7 +312,7 @@ void ULocusReplicationGraph::RemoveClientConnection(UNetConnection* NetConnectio
 			}
 			else
 			{
-				ConnectionManager->ConnectionId = ConnectionId++;
+				ConnectionManager->ConnectionOrderNum = ConnectionId++;
 			}
 		}
 	};
@@ -425,7 +423,8 @@ void ULocusReplicationGraph::ResetGameWorldState()
 	//all actor will be destroyed. just reset it.
 	PendingConnectionActors.Reset();
 	PendingTeamRequests.Reset();
-
+	#pragma warning(push)
+	#pragma warning(disable: 4458)
 	auto EmptyConnectionNode = [](TArray<UNetReplicationGraphConnection*>& Connections)
 	{
 		for (UNetReplicationGraphConnection* ConnManager : Connections)
@@ -436,7 +435,7 @@ void ULocusReplicationGraph::ResetGameWorldState()
 			}
 		}
 	};
-
+	#pragma warning(pop)
 	EmptyConnectionNode(PendingConnections);
 	EmptyConnectionNode(Connections);
 
@@ -459,10 +458,9 @@ void ULocusReplicationGraph::AddDependentActor(AActor* ReplicatorActor, AActor* 
 
 		if (FGlobalActorReplicationInfo* ReplicationInfo = GlobalActorReplicationInfoMap.Find(ReplicatorActor))
 		{
-			ReplicationInfo->DependentActorList.PrepareForWrite();
-			if (!ReplicationInfo->DependentActorList.Contains(DependentActor))
+			if (!ReplicationInfo->GetDependentActorList().Contains(DependentActor))
 			{
-				ReplicationInfo->DependentActorList.Add(DependentActor);
+				GlobalActorReplicationInfoMap.AddDependentActor(ReplicatorActor,DependentActor);
 			}
 		}
 		else
@@ -480,8 +478,7 @@ void ULocusReplicationGraph::RemoveDependentActor(AActor* ReplicatorActor, AActo
 
 		if (FGlobalActorReplicationInfo* ReplicationInfo = GlobalActorReplicationInfoMap.Find(ReplicatorActor))
 		{
-			ReplicationInfo->DependentActorList.PrepareForWrite();
-			ReplicationInfo->DependentActorList.Remove(DependentActor);
+			GlobalActorReplicationInfoMap.RemoveDependentActor(ReplicatorActor,DependentActor);
 		}
 		else
 		{
@@ -680,7 +677,7 @@ void ULocusReplicationGraph::PrintRepNodePolicies()
 	}
 }
 
-EClassRepNodeMapping ULocusReplicationGraph::GetMappingPolicy(const UClass* Class)
+EClassRepNodeMapping ULocusReplicationGraph::GetMappingPolicy(UClass* Class)
 {
 	EClassRepNodeMapping* PolicyPtr = ClassRepNodePolicies.Get(Class);
 	EClassRepNodeMapping Policy = PolicyPtr ? *PolicyPtr : EClassRepNodeMapping::NotRouted;
