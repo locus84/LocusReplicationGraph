@@ -1,4 +1,6 @@
-# Locus Replication Graph
+# Hashem Game Dev Edit of Locus Replication Graph
+
+This fork adds support for 4.26-5.0 which are the latest versions of Unreal engine , Star and share with others.
 
 This is an extension of ReplicationGraph plugin introduced in UE 4.20.
 It contains a few blueprint library functions that controls replication graph.

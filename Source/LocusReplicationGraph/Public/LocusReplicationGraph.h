@@ -90,7 +90,7 @@ public:
 		FClassReplicationInfo Info;
 		Info.DistancePriorityScale = DistancePriorityScale;
 		Info.StarvationPriorityScale = StarvationPriorityScale;
-		Info.CullDistanceSquared = CullDistanceSquared;
+		Info.SetCullDistanceSquared(CullDistanceSquared);
 		Info.ReplicationPeriodFrame = ReplicationPeriodFrame;
 		Info.ActorChannelFrameTimeout = ActorChannelFrameTimeout;
 		return Info;
@@ -245,7 +245,7 @@ public:
 
 private:
 
-	EClassRepNodeMapping GetMappingPolicy(const UClass* Class);
+	EClassRepNodeMapping GetMappingPolicy(UClass* Class);
 
 	bool IsSpatialized(EClassRepNodeMapping Mapping) const { return Mapping >= EClassRepNodeMapping::Spatialize_Static; }
 
