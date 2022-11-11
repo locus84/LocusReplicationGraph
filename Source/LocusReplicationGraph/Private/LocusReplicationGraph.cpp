@@ -227,11 +227,11 @@ void ULocusReplicationGraph::InitGlobalActorClassSettings()
 
 void ULocusReplicationGraph::InitGlobalGraphNodes()
 {
-	// Preallocate some replication lists.
-	/*PreAllocateRepList(3, 12);
+	// Preallocate some replication lists. comment the following 4 lines in case you use UE5+
+	PreAllocateRepList(3, 12);
 	PreAllocateRepList(6, 12);
 	PreAllocateRepList(128, 64);
-	PreAllocateRepList(512, 16);*/
+	PreAllocateRepList(512, 16);
 
 	// -----------------------------------------------
 	//	Spatial Actors
